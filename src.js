@@ -8,9 +8,77 @@ const euro = n => new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'
 const date = s => s ? new Date(s).toLocaleDateString('it-IT') : '—';
 const esc = v => String(v ?? '—').replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]));
 function login(message='Accedi per consultare i dati sincronizzati dal software locale.') {
-  app.innerHTML = `<main class="login-wrap"><section class="login card"><div class="brand"><div class="brand-icon">P</div><div><strong>Peppol</strong><span>Sales Analytics</span></div></div><h1>La tua attività, ovunque.</h1><p>${message}</p><form id="login"><label>Email<input type="email" name="email" required autocomplete="username" placeholder="nome@azienda.it"></label><label>Password<input type="password" name="password" required autocomplete="current-password" placeholder="Password"></label><button>Accedi alla dashboard</button><div id="error" class="error"></div></form><small>I dati vengono sincronizzati dal software Peppol installato sul computer.</small></section></main>`;
-  document.querySelector('#login').addEventListener('submit',async e=>{e.preventDefault();const fd=new FormData(e.currentTarget);const {error}=await sb.auth.signInWithPassword({email:fd.get('email'),password:fd.get('password')});if(error)document.querySelector('#error').textContent='Accesso non riuscito. Verifica le credenziali.';else render();});
+  app.innerHTML = `<main class="login-wrap"><section class="login card"><div class="brand"><div class="brand-icon">P</div><div><strong>Peppol</strong><span>Sales Analytics</span></div></div><h1>La tua attività, ovunque.</h1><p>${message}</p><form id="login"><label>Email<input type="email" name="email" required autocomplete="username" placeholder="nome@azienda.it"></label><label>Password<input type="password" name="password" required autocomplete="current-password" placeholder="Password"></label><button type="submit">Accedi alla dashboard</button><div id="error" class="error" role="alert"></div></form><button type="button" id="forgot-password" class="secondary">Password dimenticata?</button><div id="recovery-message" class="error" role="status"></div><small>I dati vengono sincronizzati dal software Peppol installato sul computer.</small></section></main>`;
+  document.querySelector('#login').addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const { error } = await sb.auth.signInWithPassword({
+      email: fd.get('email'),
+      password: fd.get('password')
+    });
+    if (error) {
+      document.querySelector('#error').textContent = 'Accesso non riuscito. Verifica le credenziali.';
+    } else {
+      render();
+    }
+  });
+
+  document.querySelector('#forgot-password').addEventListener('click', async () => {
+    const email = document.querySelector('#login input[name="email"]').value.trim();
+    const messageEl = document.querySelector('#recovery-message');
+    if (!email) {
+      messageEl.textContent = 'Inserisci prima il tuo indirizzo email nel campo Email.';
+      document.querySelector('#login input[name="email"]').focus();
+      return;
+    }
+    const button = document.querySelector('#forgot-password');
+    button.disabled = true;
+    messageEl.textContent = 'Invio email di recupero in corso…';
+    const { error } = await sb.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/`
+    });
+    button.disabled = false;
+    messageEl.textContent = error
+      ? `Impossibile inviare l’email di recupero: ${error.message}`
+      : 'Se l’indirizzo è registrato, riceverai un’email con il link per reimpostare la password. Controlla anche Spam.';
+  });
 }
+
+function resetPasswordPage(message = '') {
+  app.innerHTML = `<main class="login-wrap"><section class="login card"><div class="brand"><div class="brand-icon">P</div><div><strong>Peppol</strong><span>Sales Analytics</span></div></div><h1>Reimposta la password</h1><p>Inserisci una nuova password per il tuo account.</p><form id="reset-password-form"><label>Nuova password<input type="password" name="password" required minlength="6" autocomplete="new-password" placeholder="Almeno 6 caratteri"></label><label>Conferma nuova password<input type="password" name="confirmPassword" required minlength="6" autocomplete="new-password" placeholder="Ripeti la nuova password"></label><button type="submit">Salva nuova password</button><div id="reset-error" class="error" role="alert">${esc(message)}</div></form><button type="button" id="back-to-login" class="secondary">Torna al login</button></section></main>`;
+
+  document.querySelector('#back-to-login').addEventListener('click', () => {
+    login('Accedi con la nuova password.');
+  });
+
+  document.querySelector('#reset-password-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const password = String(fd.get('password') || '');
+    const confirmPassword = String(fd.get('confirmPassword') || '');
+    const errorEl = document.querySelector('#reset-error');
+    const button = e.currentTarget.querySelector('button[type="submit"]');
+
+    if (password !== confirmPassword) {
+      errorEl.textContent = 'Le due password non coincidono.';
+      return;
+    }
+
+    button.disabled = true;
+    errorEl.textContent = 'Aggiornamento della password in corso…';
+    const { error } = await sb.auth.updateUser({ password });
+    button.disabled = false;
+
+    if (error) {
+      errorEl.textContent = `Non è stato possibile aggiornare la password: ${error.message}`;
+      return;
+    }
+
+    app.innerHTML = `<main class="login-wrap"><section class="login card"><div class="brand"><div class="brand-icon">P</div><div><strong>Peppol</strong><span>Sales Analytics</span></div></div><h1>Password aggiornata</h1><p>La nuova password è stata salvata correttamente.</p><button type="button" id="continue-dashboard">Continua</button></section></main>`;
+    document.querySelector('#continue-dashboard').addEventListener('click', render);
+  });
+}
+
 function moneyCard(label,value,icon,sub='') { return `<article class="metric"><div class="metric-top"><span>${label}</span><span class="metric-icon">${icon}</span></div><strong>${value}</strong><small>${sub}</small></article>`; }
 function table(title,rows,cols) { return `<section class="card table-card"><div class="section-head"><h2>${title}</h2><span>${rows.length} recenti</span></div>${rows.length?`<div class="table-scroll"><table><thead><tr>${cols.map(c=>`<th>${c.label}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c.money?esc(euro(r[c.key])):esc(r[c.key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'<div class="empty">Nessun dato sincronizzato per questa sezione.</div>'}</section>`; }
 async function render(){
@@ -27,4 +95,14 @@ async function render(){
  document.querySelector('#refresh').onclick=render;document.querySelector('#logout').onclick=()=>sb.auth.signOut().then(render);
 }
 if(!url||!anon){app.innerHTML='<main class="login-wrap"><section class="card login"><h1>Configurazione necessaria</h1><p>Imposta VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nelle variabili ambiente di Vercel.</p></section></main>';}
-else {sb=createClient(url,anon);login();}
+else {
+  sb = createClient(url, anon);
+  // Supabase emette PASSWORD_RECOVERY quando il link email viene aperto
+  // e la sessione di recupero è stata riconosciuta.
+  sb.auth.onAuthStateChange((event) => {
+    if (event === 'PASSWORD_RECOVERY') {
+      resetPasswordPage();
+    }
+  });
+  login();
+}
