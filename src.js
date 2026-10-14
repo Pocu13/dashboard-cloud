@@ -7,6 +7,8 @@ const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const app = document.querySelector('#app');
 
 let sb = null;
+let snapshot = null;
+let currentUser = null;
 
 const euro = n => new Intl.NumberFormat('it-IT', {
   style: 'currency',
@@ -14,15 +16,23 @@ const euro = n => new Intl.NumberFormat('it-IT', {
   maximumFractionDigits: 2
 }).format(Number(n || 0));
 
-const date = s => s ? new Date(s).toLocaleDateString('it-IT') : '—';
-
-const esc = v => String(v ?? '—').replace(/[&<>\\\"']/g, ch => ({
+const esc = v => String(v ?? '—').replace(/[&<>"']/g, ch => ({
   '&': '&amp;',
   '<': '&lt;',
   '>': '&gt;',
-  '\\\"': '&quot;',
+  '"': '&quot;',
   "'": '&#39;'
 }[ch]));
+
+const fmtDate = s => {
+  if (!s) return '—';
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? esc(s) : d.toLocaleDateString('it-IT');
+};
+
+const fmtDateTime = s => s
+  ? new Date(s).toLocaleString('it-IT')
+  : 'Mai';
 
 function login(message = 'Accedi per consultare i dati sincronizzati dal software locale.') {
   app.innerHTML = `
@@ -33,20 +43,22 @@ function login(message = 'Accedi per consultare i dati sincronizzati dal softwar
           <div><strong>Peppol</strong><span>Sales Analytics</span></div>
         </div>
         <h1>La tua attività, ovunque.</h1>
-        <p>${message}</p>
+        <p>${esc(message)}</p>
         <form id="login">
-          <label>
-            Email
-            <input type="email" name="email" required autocomplete="username" placeholder="nome@azienda.it">
+          <label>Email
+            <input type="email" name="email" required autocomplete="username"
+              placeholder="nome@azienda.it">
           </label>
-          <label>
-            Password
-            <input type="password" name="password" required autocomplete="current-password" placeholder="Password">
+          <label>Password
+            <input type="password" name="password" required
+              autocomplete="current-password" placeholder="Password">
           </label>
           <button type="submit">Accedi alla dashboard</button>
           <div id="error" class="error" role="alert"></div>
         </form>
-        <button type="button" id="forgot-password" class="secondary">Password dimenticata?</button>
+        <button type="button" id="forgot-password" class="secondary">
+          Password dimenticata?
+        </button>
         <div id="recovery-message" class="error" role="status"></div>
         <small>I dati vengono sincronizzati dal software Peppol installato sul computer.</small>
       </section>
@@ -57,10 +69,10 @@ function login(message = 'Accedi per consultare i dati sincronizzati dal softwar
 
     const fd = new FormData(e.currentTarget);
     const errorEl = document.querySelector('#error');
-    const submitButton = e.currentTarget.querySelector('button[type="submit"]');
+    const button = e.currentTarget.querySelector('[type="submit"]');
 
-    submitButton.disabled = true;
-    submitButton.textContent = 'Accesso in corso…';
+    button.disabled = true;
+    button.textContent = 'Accesso in corso…';
     errorEl.textContent = '';
 
     try {
@@ -70,61 +82,58 @@ function login(message = 'Accedi per consultare i dati sincronizzati dal softwar
       });
 
       if (error) {
-        const known = {
-          'Invalid login credentials': 'Email o password non corretti.',
-          'Email not confirmed': 'L’indirizzo email non è ancora stato confermato.',
-          'Too many requests': 'Troppi tentativi. Attendi qualche minuto e riprova.',
-          'User not found': 'Non esiste un account con questo indirizzo email.'
-        };
-
         errorEl.textContent =
-          (known[error.message] || error.message || 'Errore di autenticazione non specificato') +
-          (error.code ? ' (codice: ' + error.code + ')' : '') +
-          (error.status ? ' (HTTP ' + error.status + ')' : '');
-      } else {
-        await render();
+          `${error.message || 'Accesso non riuscito'}`
+          + (error.status ? ` (HTTP ${error.status})` : '')
+          + (error.code ? ` (${error.code})` : '');
+        return;
       }
+
+      await render();
     } catch (err) {
       errorEl.textContent =
-        'Errore durante il collegamento al servizio di accesso. Controlla la connessione e riprova.' +
-        (err && err.message ? ' Dettaglio: ' + err.message : '');
+        'Errore di collegamento: ' + (err?.message || 'riprova.');
     } finally {
-      const currentButton = document.querySelector('#login button[type="submit"]');
-
-      if (currentButton) {
-        currentButton.disabled = false;
-        currentButton.textContent = 'Accedi alla dashboard';
+      const activeButton = document.querySelector('#login [type="submit"]');
+      if (activeButton) {
+        activeButton.disabled = false;
+        activeButton.textContent = 'Accedi alla dashboard';
       }
     }
   });
 
   document.querySelector('#forgot-password').addEventListener('click', async () => {
-    const email = document.querySelector('#login input[name="email"]').value.trim();
-    const messageEl = document.querySelector('#recovery-message');
+    const emailInput = document.querySelector('#login input[name="email"]');
+    const message = document.querySelector('#recovery-message');
+    const button = document.querySelector('#forgot-password');
+    const email = emailInput.value.trim();
 
     if (!email) {
-      messageEl.textContent = 'Inserisci prima il tuo indirizzo email nel campo Email.';
-      document.querySelector('#login input[name="email"]').focus();
+      message.textContent = 'Inserisci prima il tuo indirizzo email.';
+      emailInput.focus();
       return;
     }
 
-    const button = document.querySelector('#forgot-password');
     button.disabled = true;
-    messageEl.textContent = 'Invio email di recupero in corso…';
+    message.textContent = 'Invio email in corso…';
 
-    const { error } = await sb.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/`
-    });
+    try {
+      const { error } = await sb.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/`
+      });
 
-    button.disabled = false;
-
-    messageEl.textContent = error
-      ? `Impossibile inviare l’email di recupero: ${error.message}`
-      : 'Se l’indirizzo è registrato, riceverai un’email con il link per reimpostare la password. Controlla anche Spam.';
+      message.textContent = error
+        ? `Errore: ${error.message}`
+        : 'Se l’indirizzo è registrato, riceverai un’email per reimpostare la password.';
+    } catch (err) {
+      message.textContent = 'Errore: ' + (err?.message || 'riprova.');
+    } finally {
+      button.disabled = false;
+    }
   });
 }
 
-function resetPasswordPage(message = '') {
+function resetPasswordPage() {
   app.innerHTML = `
     <main class="login-wrap">
       <section class="login card">
@@ -133,67 +142,58 @@ function resetPasswordPage(message = '') {
           <div><strong>Peppol</strong><span>Sales Analytics</span></div>
         </div>
         <h1>Reimposta la password</h1>
-        <p>Inserisci una nuova password per il tuo account.</p>
-        <form id="reset-password-form">
-          <label>
-            Nuova password
-            <input type="password" name="password" required minlength="6" autocomplete="new-password" placeholder="Almeno 6 caratteri">
+        <p>Inserisci e conferma la nuova password.</p>
+        <form id="reset-form">
+          <label>Nuova password
+            <input type="password" name="password" required minlength="6"
+              autocomplete="new-password">
           </label>
-          <label>
-            Conferma nuova password
-            <input type="password" name="confirmPassword" required minlength="6" autocomplete="new-password" placeholder="Ripeti la nuova password">
+          <label>Conferma password
+            <input type="password" name="confirm" required minlength="6"
+              autocomplete="new-password">
           </label>
-          <button type="submit">Salva nuova password</button>
-          <div id="reset-error" class="error" role="alert">${esc(message)}</div>
+          <button type="submit">Salva password</button>
+          <div id="reset-error" class="error" role="alert"></div>
         </form>
-        <button type="button" id="back-to-login" class="secondary">Torna al login</button>
       </section>
     </main>`;
 
-  document.querySelector('#back-to-login').addEventListener('click', () => {
-    login('Accedi con la nuova password.');
-  });
-
-  document.querySelector('#reset-password-form').addEventListener('submit', async e => {
+  document.querySelector('#reset-form').addEventListener('submit', async e => {
     e.preventDefault();
 
     const fd = new FormData(e.currentTarget);
     const password = String(fd.get('password') || '');
-    const confirmPassword = String(fd.get('confirmPassword') || '');
+    const confirm = String(fd.get('confirm') || '');
     const errorEl = document.querySelector('#reset-error');
-    const button = e.currentTarget.querySelector('button[type="submit"]');
+    const button = e.currentTarget.querySelector('[type="submit"]');
 
-    if (password !== confirmPassword) {
-      errorEl.textContent = 'Le due password non coincidono.';
+    if (password !== confirm) {
+      errorEl.textContent = 'Le password non coincidono.';
       return;
     }
 
     button.disabled = true;
-    errorEl.textContent = 'Aggiornamento della password in corso…';
+    errorEl.textContent = 'Aggiornamento in corso…';
 
-    const { error } = await sb.auth.updateUser({ password });
+    try {
+      const { error } = await sb.auth.updateUser({ password });
 
-    button.disabled = false;
+      if (error) {
+        errorEl.textContent = error.message;
+        return;
+      }
 
-    if (error) {
-      errorEl.textContent = `Non è stato possibile aggiornare la password: ${error.message}`;
-      return;
+      errorEl.textContent = 'Password aggiornata. Puoi continuare.';
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.textContent = 'Apri dashboard';
+      next.addEventListener('click', render);
+      e.currentTarget.replaceWith(next);
+    } catch (err) {
+      errorEl.textContent = err?.message || 'Errore durante il salvataggio.';
+    } finally {
+      button.disabled = false;
     }
-
-    app.innerHTML = `
-      <main class="login-wrap">
-        <section class="login card">
-          <div class="brand">
-            <div class="brand-icon">P</div>
-            <div><strong>Peppol</strong><span>Sales Analytics</span></div>
-          </div>
-          <h1>Password aggiornata</h1>
-          <p>La nuova password è stata salvata correttamente.</p>
-          <button type="button" id="continue-dashboard">Continua</button>
-        </section>
-      </main>`;
-
-    document.querySelector('#continue-dashboard').addEventListener('click', render);
   });
 }
 
@@ -201,52 +201,222 @@ function moneyCard(label, value, icon, sub = '') {
   return `
     <article class="metric">
       <div class="metric-top">
-        <span>${label}</span>
+        <span>${esc(label)}</span>
         <span class="metric-icon">${icon}</span>
       </div>
-      <strong>${value}</strong>
-      <small>${sub}</small>
+      <strong>${esc(value)}</strong>
+      <small>${esc(sub)}</small>
     </article>`;
 }
 
 function table(title, rows, cols) {
+  rows = Array.isArray(rows) ? rows : [];
+
   return `
     <section class="card table-card">
       <div class="section-head">
-        <h2>${title}</h2>
-        <span>${rows.length} recenti</span>
+        <h2>${esc(title)}</h2>
+        <span>${rows.length} documenti</span>
       </div>
       ${
         rows.length
           ? `<div class="table-scroll">
               <table>
-                <thead>
-                  <tr>${cols.map(c => `<th>${c.label}</th>`).join('')}</tr>
-                </thead>
+                <thead><tr>
+                  ${cols.map(c => `<th>${esc(c.label)}</th>`).join('')}
+                </tr></thead>
                 <tbody>
-                  ${rows.map(r => `
-                    <tr>
-                      ${cols.map(c => `
-                        <td>${c.money ? esc(euro(r[c.key])) : esc(r[c.key])}</td>
-                      `).join('')}
-                    </tr>
-                  `).join('')}
+                  ${rows.map(r => `<tr>
+                    ${cols.map(c => {
+                      const value = r?.[c.key];
+                      const output = c.money
+                        ? euro(value)
+                        : c.date
+                          ? fmtDate(value)
+                          : esc(value);
+                      return `<td>${output}</td>`;
+                    }).join('')}
+                  </tr>`).join('')}
                 </tbody>
               </table>
             </div>`
-          : '<div class="empty">Nessun dato sincronizzato per questa sezione.</div>'
+          : '<div class="empty">Nessun dato disponibile nell’ultima sincronizzazione.</div>'
       }
     </section>`;
 }
 
-async function render() {
-  const { data: { session } } = await sb.auth.getSession();
+const navItems = [
+  { id: 'dashboard', label: 'Dashboard', icon: '▦' },
+  { id: 'sales', label: 'Fatture vendita', icon: '▤' },
+  { id: 'purchases', label: 'Fatture acquisto', icon: '▧' },
+  { id: 'orders', label: 'Ordini clienti', icon: '▣' },
+  { id: 'bank', label: 'Estratto conto', icon: '⇄' }
+];
 
-  if (!session) {
+function getPage() {
+  const page = window.location.hash.replace(/^#\/?/, '').split('/')[0];
+  return navItems.some(item => item.id === page) ? page : 'dashboard';
+}
+
+function shell(page, synced, content) {
+  return `
+    <aside class="sidebar">
+      <a class="brand brand-link" href="#/dashboard">
+        <div class="brand-icon">P</div>
+        <div><strong>Peppol</strong><span>Sales Analytics</span></div>
+      </a>
+
+      <nav aria-label="Navigazione principale">
+        ${navItems.map(item => `
+          <a href="#/${item.id}"
+             class="nav-link ${page === item.id ? 'active' : ''}"
+             ${page === item.id ? 'aria-current="page"' : ''}>
+            <span class="nav-icon">${item.icon}</span>
+            <span>${item.label}</span>
+          </a>
+        `).join('')}
+      </nav>
+
+      <div class="side-foot">
+        Dashboard cloud<br>
+        <span>Replica in sola lettura</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="page-header">
+        <div class="page-heading">
+          <p class="eyebrow">PEPPOL SALES ANALYTICS</p>
+          <h1>${esc(navItems.find(item => item.id === page)?.label || 'Dashboard')}</h1>
+          <p class="muted">Dati sincronizzati dal software locale.</p>
+        </div>
+
+        <div class="header-actions">
+          <span class="sync-status">
+            <i></i>
+            <span>Ultima sincronizzazione</span>
+            <b>${esc(synced)}</b>
+          </span>
+          <button id="refresh" class="secondary">↻ Aggiorna</button>
+          <button id="logout" class="secondary">Esci</button>
+        </div>
+      </header>
+
+      <div class="page-content">${content}</div>
+
+      <footer>
+        Peppol Sales Analytics · Dashboard online ·
+        <span>Replica in sola lettura</span>
+      </footer>
+    </main>
+  `;
+}
+
+function dashboardPage(p, k, b, synced) {
+  return `
+    <section class="section-head kpi-title">
+      <h2>Riepilogo economico</h2>
+      <span>Valori dell’ultima sincronizzazione</span>
+    </section>
+
+    <section class="metrics">
+      ${moneyCard('Fatturato lordo', euro(k.sales?.gross_total), '↗',
+        `${k.sales?.count || 0} fatture vendita`)}
+      ${moneyCard('Fatture acquisto', euro(k.purchases?.gross_total), '↙',
+        `${k.purchases?.count || 0} fatture registrate`)}
+      ${moneyCard('Ordini clienti', euro(k.orders?.gross_total), '▣',
+        `${k.orders?.count || 0} ordini`)}
+      ${moneyCard('Entrate bancarie', euro(b.incoming), '＋',
+        `${b.count || 0} movimenti importati`)}
+    </section>
+
+    <section class="metrics metrics-small">
+      ${moneyCard('Uscite bancarie', euro(b.outgoing), '−',
+        'Totale movimenti in uscita')}
+      ${moneyCard('Movimenti abbinati', String(b.linked_sales || 0), '✓',
+        'Collegati a fatture vendita')}
+      ${moneyCard('Fatture vendita', String(k.sales?.count || 0), '▤',
+        'Documenti sincronizzati')}
+      ${moneyCard('Ultimo aggiornamento', synced, '◷',
+        'Ora locale del software')}
+    </section>
+
+    <section class="quick-links">
+      <h2>Vai alle sezioni</h2>
+      <div class="quick-grid">
+        ${navItems.filter(item => item.id !== 'dashboard').map(item => `
+          <a class="quick-link card" href="#/${item.id}">
+            <span class="quick-icon">${item.icon}</span>
+            <span>${item.label}</span>
+            <span class="quick-arrow">→</span>
+          </a>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function pageContent(page, p, k, b, synced) {
+  switch (page) {
+    case 'sales':
+      return table('Fatture vendita', p.sales_invoices || [], [
+        { key: 'invoice_number', label: 'Numero' },
+        { key: 'counterparty', label: 'Cliente' },
+        { key: 'issue_date', label: 'Data', date: true },
+        { key: 'total', label: 'Totale', money: true },
+        { key: 'status', label: 'Stato' }
+      ]);
+
+    case 'purchases':
+      return table('Fatture acquisto', p.purchase_invoices || [], [
+        { key: 'invoice_number', label: 'Numero' },
+        { key: 'counterparty', label: 'Fornitore' },
+        { key: 'issue_date', label: 'Data', date: true },
+        { key: 'total', label: 'Totale', money: true },
+        { key: 'status', label: 'Stato' }
+      ]);
+
+    case 'orders':
+      return table('Ordini clienti', p.orders || [], [
+        { key: 'order_number', label: 'Ordine' },
+        { key: 'order_date', label: 'Data', date: true },
+        { key: 'total', label: 'Totale', money: true },
+        { key: 'currency', label: 'Valuta' }
+      ]);
+
+    case 'bank':
+      return `
+        <section class="metrics bank-metrics">
+          ${moneyCard('Entrate', euro(b.incoming), '＋', 'Movimenti in entrata')}
+          ${moneyCard('Uscite', euro(b.outgoing), '−', 'Movimenti in uscita')}
+          ${moneyCard('Movimenti abbinati', String(b.linked_sales || 0), '✓',
+            'Collegati a fatture vendita')}
+          ${moneyCard('Movimenti importati', String(b.count || 0), '⇄',
+            'Totale movimenti sincronizzati')}
+        </section>
+        <section class="card bank-card">
+          <h2>Estratto conto</h2>
+          <p class="muted">
+            Il riepilogo mostra i movimenti bancari presenti nell’ultima
+            sincronizzazione. L’elenco dettagliato sarà disponibile se
+            il software locale include i singoli movimenti nel payload cloud.
+          </p>
+        </section>`;
+
+    default:
+      return dashboardPage(p, k, b, synced);
+  }
+}
+
+async function render() {
+  const { data: { session }, error: sessionError } = await sb.auth.getSession();
+
+  if (sessionError || !session) {
     login();
     return;
   }
 
+  currentUser = session.user;
   app.innerHTML = '<div class="loading">Caricamento dati sincronizzati…</div>';
 
   const { data, error } = await sb
@@ -260,154 +430,71 @@ async function render() {
       <main class="login-wrap">
         <section class="card login">
           <h1>Dashboard non disponibile</h1>
-          <p>Non è stato possibile leggere i dati cloud. Controlla la configurazione Supabase e le autorizzazioni.</p>
+          <p>Non è stato possibile leggere i dati cloud: ${esc(error.message)}</p>
           <button id="retry">Riprova</button>
-          <button class="secondary" id="logout">Esci</button>
+          <button id="logout" class="secondary">Esci</button>
         </section>
       </main>`;
 
     document.querySelector('#retry').onclick = render;
-    document.querySelector('#logout').onclick = () => sb.auth.signOut().then(render);
+    document.querySelector('#logout').onclick = async () => {
+      await sb.auth.signOut();
+      login();
+    };
     return;
   }
 
-  const p = data?.payload || {};
+  snapshot = data;
+  renderPage();
+}
+
+function renderPage() {
+  if (!currentUser || !snapshot) return;
+
+  const p = snapshot.payload || {};
   const k = p.kpi || {};
   const b = p.bank || {};
-  const synced = data?.synced_at
-    ? new Date(data.synced_at).toLocaleString('it-IT')
-    : 'Mai';
+  const synced = fmtDateTime(snapshot.synced_at);
+  const page = getPage();
 
-  app.innerHTML = `
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-icon">P</div>
-        <div><strong>Peppol</strong><span>Sales Analytics</span></div>
-      </div>
-      <nav>
-        <a class="active">▦ &nbsp; Dashboard</a>
-        <a href="#sales">▤ &nbsp; Fatture vendita</a>
-        <a href="#purchases">▧ &nbsp; Fatture acquisto</a>
-        <a href="#orders">▣ &nbsp; Ordini clienti</a>
-        <a href="#bank">⇄ &nbsp; Estratto conto</a>
-      </nav>
-      <div class="side-foot">Dashboard cloud<br/><span>Replica in sola lettura</span></div>
-    </aside>
+  app.innerHTML = shell(
+    page,
+    synced,
+    pageContent(page, p, k, b, synced)
+  );
 
-    <main class="main">
-      <header>
-        <div>
-          <p class="eyebrow">PANORAMICA</p>
-          <h1>Dashboard</h1>
-          <p class="muted">Una visione chiara e aggiornata della tua attività.</p>
-        </div>
-        <div class="header-actions">
-          <span class="sync-status">
-            <i></i> Ultima sincronizzazione<br/>
-            <b>${synced}</b>
-          </span>
-          <button id="refresh" class="secondary">↻ Aggiorna</button>
-          <button id="logout" class="secondary">Esci</button>
-        </div>
-      </header>
+  document.querySelector('#refresh').addEventListener('click', async e => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Aggiornamento…';
+    await render();
+  });
 
-      <section class="welcome">
-        <div>
-          <span class="welcome-label">PEPPOL SALES ANALYTICS</span>
-          <h2>I numeri principali, in un unico posto.</h2>
-          <p>Questa dashboard mostra una copia dei dati inviati dal software locale. Non modifica i dati originali.</p>
-        </div>
-        <div class="welcome-mark">↗</div>
-      </section>
-
-      <div class="section-head kpi-title">
-        <h2>Riepilogo economico</h2>
-        <span>Valori disponibili nell'ultima sincronizzazione</span>
-      </div>
-
-      <section class="metrics">
-        ${moneyCard('Fatturato lordo', euro(k.sales?.gross_total), '↗', `${k.sales?.count || 0} fatture vendita`)}
-        ${moneyCard('Fatture acquisto', euro(k.purchases?.gross_total), '↙', `${k.purchases?.count || 0} fatture registrate`)}
-        ${moneyCard('Ordini clienti', euro(k.orders?.gross_total), '▣', `${k.orders?.count || 0} ordini`)}
-        ${moneyCard('Entrate bancarie', euro(b.incoming), '＋', `${b.count || 0} movimenti importati`)}
-      </section>
-
-      <section class="metrics metrics-small">
-        ${moneyCard('Uscite bancarie', euro(b.outgoing), '−', 'Totale movimenti in uscita')}
-        ${moneyCard('Movimenti abbinati', String(b.linked_sales || 0), '✓', 'Collegati a fatture vendita')}
-        ${moneyCard('Fatture vendita', String(k.sales?.count || 0), '▤', 'Documenti nel database locale')}
-        ${moneyCard('Ultimo aggiornamento', synced, '◷', 'Ora locale del software')}
-      </section>
-
-      <div id="sales">
-        ${table('Fatture vendita', p.sales_invoices || [], [
-          { key: 'invoice_number', label: 'Numero' },
-          { key: 'counterparty', label: 'Cliente' },
-          { key: 'issue_date', label: 'Data' },
-          { key: 'total', label: 'Totale', money: true },
-          { key: 'status', label: 'Stato' }
-        ])}
-      </div>
-
-      <div id="purchases">
-        ${table('Fatture acquisto', p.purchase_invoices || [], [
-          { key: 'invoice_number', label: 'Numero' },
-          { key: 'counterparty', label: 'Fornitore' },
-          { key: 'issue_date', label: 'Data' },
-          { key: 'total', label: 'Totale', money: true },
-          { key: 'status', label: 'Stato' }
-        ])}
-      </div>
-
-      <div id="orders">
-        ${table('Ordini clienti', p.orders || [], [
-          { key: 'order_number', label: 'Ordine' },
-          { key: 'order_date', label: 'Data' },
-          { key: 'total', label: 'Totale', money: true },
-          { key: 'currency', label: 'Valuta' }
-        ])}
-      </div>
-
-      <section id="bank" class="card bank-card">
-        <div>
-          <h2>Estratto conto</h2>
-          <p class="muted">Movimenti importati nel software principale.</p>
-        </div>
-        <div class="bank-stats">
-          <div><small>Entrate</small><strong>${euro(b.incoming)}</strong></div>
-          <div><small>Uscite</small><strong>${euro(b.outgoing)}</strong></div>
-          <div><small>Abbinamenti</small><strong>${b.linked_sales || 0}</strong></div>
-        </div>
-      </section>
-
-      <footer>
-        Peppol Sales Analytics · Dashboard online ·
-        <span>Replica in sola lettura</span>
-      </footer>
-    </main>`;
-
-  document.querySelector('#refresh').onclick = render;
-  document.querySelector('#logout').onclick = () => sb.auth.signOut().then(render);
+  document.querySelector('#logout').addEventListener('click', async () => {
+    await sb.auth.signOut();
+    currentUser = null;
+    snapshot = null;
+    login();
+  });
 }
+
+window.addEventListener('hashchange', renderPage);
 
 if (!url || !anon) {
   app.innerHTML = `
     <main class="login-wrap">
       <section class="card login">
         <h1>Configurazione necessaria</h1>
-        <p>Imposta VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nelle variabili ambiente di Vercel.</p>
+        <p>Configura VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nelle variabili ambiente di Vercel.</p>
       </section>
     </main>`;
 } else {
   sb = createClient(url, anon);
 
-  // Supabase emette PASSWORD_RECOVERY quando il link email viene aperto
-  // e la sessione di recupero è stata riconosciuta.
   sb.auth.onAuthStateChange((event) => {
     if (event === 'PASSWORD_RECOVERY') {
       resetPasswordPage();
     }
   });
 
-  login();
+  render();
 }
